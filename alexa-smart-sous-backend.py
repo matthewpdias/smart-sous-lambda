@@ -63,6 +63,10 @@ def build_response(session_attributes, speechlet_response):
 def get_user_id(session):
     return session['user']['userId'].replace('amzn1.ask.account.','')
 
+def clear_state(session):
+    userID = get_user_id(session)
+    s3 = boto3.resource('s3')
+    s3.Object('smartsous', user_id).delete()
 
 def save_state(session, recipe_id, current_step):
     #only save if we have a loaded recipe
@@ -98,6 +102,20 @@ def load_state(session):
     except:
         return False
     return data
+
+def get_resume_response():
+    session_attributes = {}
+    card_title = "Welcome"
+    speech_output = "It looks like you wre in the middle of cooking!" \
+                    "Say, Resume my recipe, to continue that recipe, "\
+                    "or select a new recipe" \
+    # If the user either does not reply to the welcome message or says something
+    # that is not understood, they will be prompted again with this text.
+    reprompt_text = "to resume, say Resume my recipe. To start over, you can " \
+                    "search for a new recipe by saying, search for Potatoes"
+    should_end_session = False
+    return build_response(session_attributes, build_speechlet_response(
+        card_title, speech_output, reprompt_text, should_end_session))
 
 def get_welcome_response():
     """ If we wanted to initialize the session to have some attributes we could
@@ -282,6 +300,27 @@ def get_ingredients_in_session(intent, session):
 
     return build_response(session_attributes, build_speechlet_response(intent['name'], speech_output, reprompt_text, should_end_session))
 
+def resume_session_intent(intent, session):
+    session_attributes = {}
+    card_title = intent['name']
+    should_end_session = False
+
+    data = load_state(session);
+
+    if data:
+        #create session attributes for recipe
+        session_attributes = create_active_recipe_from_id(data['recipe_id'])
+        session_attributes['current_step'] = data['current_step']
+
+        speech_output = "let's continue making " + session_attributes['name'] + "\n"
+        reprompt_text = "ask me to go back, repeat the step, or move on"
+
+    else:
+
+        speech_output = "unable to resume recipe, please search for a new one"
+        reprompt_text = "find a recipe by saying: Search for Potatoes"
+
+    return build_response(session_attributes, build_speechlet_response(card_title, speech_output, reprompt_text, should_end_session))
 
 def get_current_step_response(intent, session):
     session_attributes = {}
@@ -293,9 +332,17 @@ def get_current_step_response(intent, session):
         session_attributes = session['attributes']
         save_state(session, session_attributes['id'], session_attributes['current_step'])
 
-        speech_output = steps[session['attributes']['current_step']]['instructions']
-
-        reprompt_text = "you can say, 'go back', 'repeat the step', or 'move on' to keep cooking!"
+        if session_attributes['current_step'] == 0:
+            speech_output = "You haven't started yet, ask what ingredients do I need or say move on!"
+            reprompt_text = "ask what ingredients do I need or say move on"
+        else if 
+            speech_output = steps[session['attributes']['current_step']]['instructions']
+            reprompt_text = "you can say, 'go back', 'repeat the step', or 'move on' to keep cooking!"
+        else if session_attributes['current_step'] not in steps:
+            speech_output = "Enjoy your meal!"
+            reprompt_text = "You have finished this recipe, goodbye"
+            clear_state(session);
+            should_end_session = True            
 
     else:
         speech_output = "No recipe selected, \n  Select a recipe by saying: \nlet's make Mushroom & Swiss Burgers with Pan-Seared Fingerling Potatoes"
@@ -343,10 +390,13 @@ def on_launch(launch_request, session):
     """ Called when the user launches the skill without specifying what they
     want
     """
-
     #print("on_launch requestId=" + launch_request['requestId'] + ", sessionId=" + session['sessionId'])
     # Dispatch to your skill's launch
-    return get_welcome_response()
+    context = load_state(session)
+    if (context):
+        return get_resume_response()
+    else:
+        return get_welcome_response()
 
 
 def on_intent(intent_request, session):
@@ -360,8 +410,10 @@ def on_intent(intent_request, session):
     # Dispatch to your skill's intent handlers
     if intent_name == "SelectRecipeIntent":
         return set_recipe_in_session(intent, session)
+    if intent_name == "ResumeIntent":
+        return resume_session_intent(intent, session)
     if intent_name == "GetIngredientsIntent":
-            return get_ingredients_in_session(intent, session)
+        return get_ingredients_in_session(intent, session)
     elif intent_name == "PreviousStepIntent":
         return get_previous_step_response(intent, session)
     elif intent_name == "RepeatStepIntent":
@@ -375,7 +427,6 @@ def on_intent(intent_request, session):
     elif intent_name == "AMAZON.HelpIntent":
         return get_welcome_response(intent, session)
     elif intent_name == "AMAZON.CancelIntent" or intent_name == "AMAZON.StopIntent":
-
         return handle_session_end_request(intent, session)
     else:
         raise ValueError("Invalid intent")
